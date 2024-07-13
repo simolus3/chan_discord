@@ -5,43 +5,31 @@ use std::{
 };
 
 use asterisk::{
-    bindings::{
-        ast_channel_register, ast_channel_unregister, ast_format_cap, ast_module_info,
-        ast_module_load_result_AST_MODULE_LOAD_DECLINE,
-        ast_module_load_result_AST_MODULE_LOAD_SUCCESS, ast_module_register,
-        ast_module_support_level_AST_MODULE_SUPPORT_UNKNOWN, ast_module_unregister,
-    },
-    chan_discord::DISCORD_TECH,
+    astobj2::{Ao2, AsteriskWrapper},
     config::AsteriskConfig,
     formats::{Format, FormatCapabilities},
-    Ao2, AsteriskLogger,
+    logger::AsteriskLogger,
 };
+use asterisk_sys::bindings::{
+    ast_channel_register, ast_channel_unregister, ast_format_cap, ast_module_info,
+    ast_module_load_result_AST_MODULE_LOAD_DECLINE, ast_module_load_result_AST_MODULE_LOAD_SUCCESS,
+    ast_module_register, ast_module_support_level_AST_MODULE_SUPPORT_UNKNOWN,
+    ast_module_unregister,
+};
+use channel_tech::DISCORD_TECH;
 use ctor::{ctor, dtor};
 use log::{info, warn};
+use queue_thread::QueueThread;
 use thread::DiscordThread;
 
-macro_rules! c_str {
-    ($lit:expr) => {
-        unsafe {
-            std::ffi::CStr::from_ptr(concat!($lit, "\0").as_ptr() as *const std::os::raw::c_char)
-        }
-    };
-}
-
-macro_rules! c_file {
-    () => {
-        c_str!(file!())
-    };
-}
-
-pub mod asterisk;
-pub mod call;
-pub mod discord;
-pub mod error;
-pub mod thread;
-pub mod utils;
+mod call;
+mod channel_tech;
+mod queue_thread;
+mod rtp_receiver;
+mod thread;
 
 static WORKER: OnceLock<RwLock<Option<DiscordThread>>> = OnceLock::new();
+static QUEUE_THREAD: OnceLock<QueueThread> = OnceLock::new();
 
 struct ModuleOptions {
     token: String,
@@ -82,7 +70,19 @@ where
     Some(body(discord))
 }
 
+pub fn queue_thread() -> QueueThread {
+    let queue = QUEUE_THREAD.get_or_init(|| QueueThread::start());
+    queue.clone()
+}
+
 unsafe extern "C" fn load_module() -> c_int {
+    if cfg!(debug_assertions) {
+        println!(
+            "Asterisk PID (if you need to attach a debugger): {}",
+            std::process::id()
+        );
+    }
+
     if log::set_logger(&AsteriskLogger)
         .map(|()| log::set_max_level(log::LevelFilter::Trace))
         .is_err()
@@ -95,11 +95,11 @@ unsafe extern "C" fn load_module() -> c_int {
     let Some(capabilities) = FormatCapabilities::new() else {
         return ast_module_load_result_AST_MODULE_LOAD_DECLINE;
     };
-    if capabilities.append(Format::slin48(), 20).is_err() {
+    if capabilities.as_mut().append(&Format::slin48(), 20).is_err() {
         return ast_module_load_result_AST_MODULE_LOAD_DECLINE;
     }
     unsafe {
-        DISCORD_TECH.capabilities = capabilities.0.into_raw();
+        DISCORD_TECH.capabilities = FormatCapabilities::into_raw(capabilities);
     }
 
     // Read token from option
@@ -143,7 +143,7 @@ unsafe extern "C" fn unload_module() -> c_int {
     let old_capabilities = std::mem::replace(&mut DISCORD_TECH.capabilities, null_mut());
     if !old_capabilities.is_null() {
         // Drop reference
-        Ao2::<ast_format_cap>::move_from_raw(old_capabilities.cast());
+        Ao2::<ast_format_cap>::from_raw(old_capabilities.cast());
     }
 
     0

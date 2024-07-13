@@ -1,36 +1,13 @@
-[package]
-name = "chan_discord"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = [
+    "asterisk-sys",
+    "asterisk",
+    "chan_discord",
+    "chan_discord_common",
+]
 
-[lib]
-crate-type = ["cdylib", "lib"]
+resolver = "2"
 
-[dependencies]
-anyhow = "1.0.86"
-crypto_secretbox = "0.1.1"
-ctor = "0.2.8"
-discortp = { version = "0.6.0", features = ["discord-full"] }
-function_name = "0.3.0"
-futures-util = "0.3.30"
-log = "0.4.21"
-opus = "0.3.0"
-rand = "0.8.5"
-serde = "1.0.203"
-serde_json = "1.0.117"
-serenity-voice-model = "0.2.0"
-thiserror = "1.0.61"
-tokio = { version = "1.38.0", features = ["rt", "macros"] }
-tokio-tungstenite = { version = "0.23.1", features = ["native-tls"] }
-tokio-util = "0.7.11"
-twilight-cache-inmemory = "0.15.4"
-twilight-gateway = "0.15.4"
-twilight-http = { version = "0.15.4", features = ["native"] }
-twilight-model = "0.15.4"
-
-[dev-dependencies]
-env_logger = "0.11.3"
-
-[build-dependencies]
-bindgen = "0.69.4"
-cc = "1.0.99"
+[profile.release]
+lto = "thin"
+panic = "abort"

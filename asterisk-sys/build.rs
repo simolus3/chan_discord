@@ -20,10 +20,4 @@ fn main() {
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
-
-    cc::Build::new()
-        .file("asterisk_wrapper.c")
-        .include("/home/simon/src/asterisk/include")
-        .compile("asterisk_wrapper");
-    println!("cargo::rerun-if-changed=asterisk_wrapper.c");
 }

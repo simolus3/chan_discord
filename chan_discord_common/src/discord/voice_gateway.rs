@@ -7,7 +7,8 @@ use rand::{thread_rng, RngCore};
 use serenity_voice_model::{
     id::{GuildId, UserId},
     payload::{
-        ClientDisconnect, Heartbeat, Identify, Ready, SelectProtocol, SessionDescription, Speaking,
+        ClientConnect, ClientDisconnect, Heartbeat, Identify, Ready, SelectProtocol,
+        SessionDescription, Speaking,
     },
     Event, ProtocolData,
 };
@@ -38,6 +39,7 @@ pub enum VoiceEvent {
     Ready(Ready),
     Speaking(Speaking),
     SessionDescription(SessionDescription),
+    ClientConnect(ClientConnect),
     ClientDisconnect(ClientDisconnect),
     Closed,
 }
@@ -142,6 +144,10 @@ impl GatewayConnection {
                             continue;
                         }
                         Event::HeartbeatAck(_) => continue,
+                        Event::ClientConnect(connect) => VoiceEvent::ClientConnect(connect),
+                        Event::ClientDisconnect(disconnect) => {
+                            VoiceEvent::ClientDisconnect(disconnect)
+                        }
                         event => {
                             return Err(anyhow!("Unexpected event from server: {event:?}"));
                         }

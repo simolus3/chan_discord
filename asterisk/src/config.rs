@@ -4,9 +4,9 @@ use std::{
     ptr::{null, NonNull},
 };
 
-use super::bindings::{
-    ast_category, ast_category_first, ast_category_get, ast_category_root, ast_config,
-    ast_config_load2, ast_flags, ast_module_info, ast_variable,
+use asterisk_sys::bindings::{
+    ast_category, ast_category_first, ast_category_get, ast_config, ast_config_load2, ast_flags,
+    ast_module_info, ast_variable,
 };
 
 pub struct AsteriskConfig {

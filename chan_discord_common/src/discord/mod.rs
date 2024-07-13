@@ -13,8 +13,8 @@ use twilight_model::id::Id;
 
 use crate::error::DiscordError;
 
-mod crypto;
-mod rtp;
+pub mod crypto;
+pub mod rtp;
 mod voice_gateway;
 pub mod voice_task;
 
@@ -69,6 +69,7 @@ impl Discord {
             let inner = inner.clone();
             tokio::spawn(async move {
                 loop {
+                    trace!("Waiting for discord global gateway event");
                     tokio::select! {
                         _ = token.cancelled() => {
                             break;

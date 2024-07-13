@@ -1,18 +1,15 @@
-use std::{mem::MaybeUninit, os::raw::c_int, ptr, string::FromUtf8Error};
+use std::{ffi::c_int, mem::MaybeUninit, ptr, string::FromUtf8Error};
 
-pub mod bindings;
+use asterisk_sys::bindings::{__IncompleteArrayField, ast_str, ast_threadstorage};
 
-mod astobj2;
+#[macro_use]
+pub mod macros;
 
-pub mod chan_discord;
+pub mod astobj2;
 pub mod channel;
 pub mod config;
 pub mod formats;
-mod logger;
-
-pub use astobj2::Ao2;
-use bindings::{__IncompleteArrayField, ast_str, ast_threadstorage};
-pub use logger::AsteriskLogger;
+pub mod logger;
 
 pub enum AsteriskError {
     GenericFailure,

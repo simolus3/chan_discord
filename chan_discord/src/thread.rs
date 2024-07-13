@@ -1,20 +1,18 @@
-use std::{collections::HashMap, thread::JoinHandle};
+use std::thread::JoinHandle;
 
-use serenity_voice_model::id::GuildId;
-use tokio::{runtime, sync::mpsc};
-use twilight_gateway::Event;
+use asterisk::{astobj2::Ao2, channel::Channel};
+use chan_discord_common::{
+    discord::Discord,
+    error::{ChanRes, DiscordError},
+    utils::{request_channel, RequestReceiver, RequestSender},
+};
+use tokio::runtime;
 use twilight_model::id::{
     marker::{ChannelMarker, GuildMarker},
     Id,
 };
 
-use crate::{
-    asterisk::channel::Channel,
-    call::{CallHandle, CallWorker},
-    discord::Discord,
-    error::{ChanRes, DiscordError},
-    utils::{request_channel, RequestReceiver, RequestSender},
-};
+use crate::call::{CallHandle, CallWorker};
 
 /// Thread using an asynchronous Tokio runtime to manage Discord gateway web sockets as well as the
 /// RTP sockets.
@@ -31,7 +29,7 @@ enum ThreadRequest {
         token: String,
     },
     PrepareCall {
-        asterisk_channel: Channel,
+        asterisk_channel: Ao2<Channel>,
         server: Id<GuildMarker>,
         channel: Id<ChannelMarker>,
     },
@@ -84,7 +82,7 @@ impl DiscordThread {
 
     pub fn prepare_call(
         &self,
-        asterisk: Channel,
+        asterisk: Ao2<Channel>,
         server: Id<GuildMarker>,
         channel: Id<ChannelMarker>,
     ) -> ChanRes<CallHandle> {
@@ -154,18 +152,23 @@ impl DiscordThreadWorker {
                         continue;
                     };
 
-                    let (mut worker, handle) = CallWorker::new(
+                    let (worker, handle) = match CallWorker::new(
                         asterisk_channel,
                         server,
                         channel,
                         self.discord.bot_user(),
                         self.discord.message_sender(),
                         events,
-                    );
+                    ) {
+                        Ok(res) => res,
+                        Err(e) => {
+                            let _ = response.send(Err(e));
+                            continue;
+                        }
+                    };
                     tokio::spawn(async move {
                         worker.run().await;
                     });
-
                     let _ = response.send(Ok(ThreadResponse::CallPrepared { call: handle }));
                 }
             }

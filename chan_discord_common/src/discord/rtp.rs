@@ -3,13 +3,15 @@ use crypto_secretbox::{KeyInit, SecretBox};
 use discortp::demux::{demux_mut, DemuxedMut};
 use discortp::discord::{IpDiscoveryPacket, IpDiscoveryType, MutableIpDiscoveryPacket};
 use discortp::rtp::MutableRtpPacket;
-use discortp::MutablePacket;
+use discortp::{MutablePacket, Packet};
 use log::debug;
 use rand::{thread_rng, RngCore};
 use std::net::IpAddr;
 use std::ops::Range;
 use std::str::FromStr;
 use tokio::net::{ToSocketAddrs, UdpSocket};
+
+use crate::constants::{RTP_PROFILE_TYPE, RTP_VERSION};
 
 use super::crypto::{EncryptionMode, VoiceDecryption, VoiceEncryption};
 
@@ -31,9 +33,13 @@ pub struct ReceivedRtpPacket {
     pub data_range: Range<usize>,
 }
 
+pub struct ReceivedRtcpPacket {
+    pub decrypted_buffer: Vec<u8>,
+}
+
 pub enum VoicePacket {
     Rtp(ReceivedRtpPacket),
-    Rtcp {},
+    Rtcp(ReceivedRtcpPacket),
 }
 
 impl VoiceDataChannel {
@@ -120,7 +126,8 @@ impl VoiceDataChannel {
         let bytes = self.send_buf.as_mut_slice();
         {
             let mut packet = MutableRtpPacket::new(bytes).unwrap();
-            packet.set_version(0x80);
+            packet.set_version(RTP_VERSION);
+            packet.set_payload_type(RTP_PROFILE_TYPE);
             packet.set_sequence(seq_no.into());
             packet.set_timestamp(timestamp.into());
             packet.set_ssrc(self.ssrc.into());
@@ -133,6 +140,11 @@ impl VoiceDataChannel {
             return Err(anyhow!("Could not encrypt"));
         };
         self.socket.send(&bytes[..size]).await?;
+
+        if self.sequence_no % 100 == 0 {
+            println!("send_voice sent something")
+        }
+
         Ok(())
     }
 
@@ -161,9 +173,15 @@ impl VoiceDataChannel {
                 })
             }
             DemuxedMut::Rtcp(mut packet) => {
-                decrypt.decrypt_packet(&mut packet)?;
+                let range = decrypt.decrypt_packet(&mut packet)?;
+                let header_size = packet.packet().len() - packet.payload().len();
 
-                VoicePacket::Rtcp {}
+                buffer.drain(range.end..); // Remove suffix, if any
+                buffer.drain(header_size..range.start); // Remove tag
+
+                VoicePacket::Rtcp(ReceivedRtcpPacket {
+                    decrypted_buffer: buffer,
+                })
             }
             DemuxedMut::FailedParse(t) => {
                 bail!("Failed decoding incoming packet at {t:?}");
@@ -179,7 +197,7 @@ impl std::fmt::Debug for VoicePacket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rtp(rtp) => f.debug_tuple("Rtp").field(&rtp.sequence_number).finish(),
-            Self::Rtcp {} => f.debug_struct("Rtcp").finish(),
+            Self::Rtcp { .. } => f.debug_struct("Rtcp").finish(),
         }
     }
 }

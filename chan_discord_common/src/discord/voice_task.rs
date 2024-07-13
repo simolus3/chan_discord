@@ -1,7 +1,8 @@
+use std::fmt::Debug;
 use std::str::FromStr;
 
-use anyhow::bail;
-use log::{trace, warn};
+use anyhow::{anyhow, bail};
+use log::{info, trace, warn};
 use serde::Serialize;
 use serenity_voice_model::id::{GuildId, UserId};
 use serenity_voice_model::payload::Speaking;
@@ -14,21 +15,31 @@ use twilight_model::id::marker::{ChannelMarker, GuildMarker, UserMarker};
 use twilight_model::id::Id;
 
 use crate::discord::crypto::EncryptionMode;
+use crate::error::{ChanRes, DiscordError};
 use crate::utils::{request_channel, RequestReceiver, RequestSender};
 
 use super::rtp::{VoiceDataChannel, VoicePacket};
 use super::voice_gateway;
 use super::voice_gateway::GatewayConnection;
 
-pub enum VoiceTaskRequest {
+enum VoiceTaskRequest {
+    Write(OutgoingVoicePacket),
     Close,
 }
 
-pub struct VoiceTaskResponse {}
+pub struct OutgoingVoicePacket {
+    pub opus_payload: Vec<u8>,
+    pub timestamp: u32,
+}
+
+type VoiceTaskResponse = ChanRes<()>;
 
 #[derive(Debug)]
 pub enum VoiceEvent {
     Packet(VoicePacket),
+    UserJoined { ssrc: u32, user: Id<UserMarker> },
+    Speaking { user: Id<UserMarker>, ssrc: u32 },
+    UserLeft { user: Id<UserMarker> },
     FullyConnected,
     Closed,
 }
@@ -129,6 +140,13 @@ impl VoiceTaskHandle {
         }
     }
 
+    pub async fn write(&self, packet: OutgoingVoicePacket) -> ChanRes<()> {
+        self.sender
+            .request(VoiceTaskRequest::Write(packet))
+            .await
+            .map_err(|e| DiscordError::InternalError { source: e.into() })?
+    }
+
     pub async fn leave_and_close(self) {
         let _ = self.sender.request(VoiceTaskRequest::Close).await;
         let _ = self.task.await;
@@ -157,8 +175,25 @@ impl VoiceTaskRunner {
     async fn handle_event(&mut self, event: VoiceTaskEvent) -> anyhow::Result<()> {
         match event {
             VoiceTaskEvent::IncomingRequest { request, response } => match request {
+                VoiceTaskRequest::Write(write) => {
+                    let res = match &mut self.state {
+                        VoiceTaskState::Connected {
+                            voice,
+                            has_session: true,
+                            ..
+                        } => voice
+                            .send_voice(write.timestamp, &write.opus_payload)
+                            .await
+                            .map_err(|e| DiscordError::InternalError { source: e }),
+                        _ => Err(DiscordError::InternalError {
+                            source: anyhow!("Voice not set up yet."),
+                        }),
+                    };
+
+                    let _ = response.send(res);
+                }
                 VoiceTaskRequest::Close => {
-                    let _ = response.send(VoiceTaskResponse {});
+                    let _ = response.send(Ok(()));
                     self.close_requested = true;
                 }
             },
@@ -207,7 +242,21 @@ impl VoiceTaskRunner {
                             };
                         }
                     }
-                    voice_gateway::VoiceEvent::Speaking(_) => {}
+                    voice_gateway::VoiceEvent::Speaking(speaking) => {
+                        if let Some(user) = speaking.user_id {
+                            if speaking.delay.is_some_and(|x| x != 0) {
+                                info!("Received interesting speaking event, delay not zero: {speaking:?}");
+                            }
+
+                            let _ = self
+                                .events
+                                .send(VoiceEvent::Speaking {
+                                    user: Id::new(user.0),
+                                    ssrc: speaking.ssrc,
+                                })
+                                .await;
+                        }
+                    }
                     voice_gateway::VoiceEvent::SessionDescription(desc) => {
                         if let VoiceTaskState::Connected {
                             gateway,
@@ -237,8 +286,28 @@ impl VoiceTaskRunner {
                             let _ = self.events.send(VoiceEvent::FullyConnected).await;
                         }
                     }
-                    voice_gateway::VoiceEvent::ClientDisconnect(_)
-                    | voice_gateway::VoiceEvent::Closed => {
+                    voice_gateway::VoiceEvent::ClientConnect(connect) => {
+                        let _ = self
+                            .events
+                            .send(VoiceEvent::UserJoined {
+                                ssrc: connect.audio_ssrc,
+                                user: Id::new(connect.user_id.0),
+                            })
+                            .await;
+                    }
+                    voice_gateway::VoiceEvent::ClientDisconnect(disconnect) => {
+                        if disconnect.user_id.0 == self.user.get() {
+                            self.close_requested = true;
+                        }
+
+                        let _ = self
+                            .events
+                            .send(VoiceEvent::UserLeft {
+                                user: Id::new(disconnect.user_id.0),
+                            })
+                            .await;
+                    }
+                    voice_gateway::VoiceEvent::Closed => {
                         self.close_requested = true;
                     }
                 }
@@ -298,6 +367,7 @@ impl VoiceTaskRunner {
     }
 
     async fn close(&mut self) {
+        trace!("Closing voice task runner");
         let (gateway, _) = self.state.sockets_mut();
         if let Some(gateway) = gateway {
             let _ = gateway.close().await;
@@ -433,4 +503,13 @@ struct UpdateRequest {
 struct VoiceStateUpdate {
     op: usize,
     d: UpdateRequest,
+}
+
+impl Debug for OutgoingVoicePacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutgoingVoicePacket")
+            .field("opus_payload (len)", &self.opus_payload.len())
+            .field("timestamp", &self.timestamp)
+            .finish_non_exhaustive()
+    }
 }

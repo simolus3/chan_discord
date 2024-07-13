@@ -2,9 +2,8 @@ use std::{ffi::c_int, ptr::null};
 
 use log::{Level, Log};
 
-use crate::asterisk::bindings::ast_log_safe;
-
-use super::bindings::ast_verb_sys_level;
+use asterisk_sys::bindings::ast_log_safe;
+use asterisk_sys::bindings::ast_verb_sys_level;
 
 pub struct AsteriskLogger;
 
@@ -33,6 +32,11 @@ impl Log for AsteriskLogger {
 
     fn log(&self, record: &log::Record) {
         let formatted = format!("{}", record.args());
+        if cfg!(debug_assertions) {
+            if record.target().contains("chan_discord") || record.target().contains("asterisk") {
+                println!("chan_discord: {formatted}");
+            }
+        }
 
         unsafe {
             ast_log_safe(

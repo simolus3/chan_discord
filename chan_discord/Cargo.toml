@@ -1,0 +1,26 @@
+[package]
+name = "chan_discord"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+rtplog = ["chan_discord_common/rtplog"]
+
+[dependencies]
+anyhow = "1.0.86"
+asterisk = { version = "0.1.0", path = "../asterisk" }
+asterisk-sys = { version = "0.1.0", path = "../asterisk-sys" }
+chan_discord_common = { version = "0.1.0", path = "../chan_discord_common" }
+ctor = "0.2.8"
+discortp = "0.6.0"
+libc = "0.2.155"
+log = "0.4.22"
+num-integer = "0.1.46"
+opus = "0.3.0"
+rand = "0.8.5"
+tokio = "1.38.0"
+twilight-gateway = { version = "0.15.4", features = ["native"], default-features = false }
+twilight-model = "0.15.4"

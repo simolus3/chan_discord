@@ -13,4 +13,6 @@ pub enum DiscordError {
     },
     #[error("The bot is already in a channel on the requested server")]
     AlreadyInChannelOnServer,
+    #[error("Could not encode data to opus")]
+    EncodeError,
 }
