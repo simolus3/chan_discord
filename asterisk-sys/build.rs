@@ -2,9 +2,14 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    let asterisk = env!(
+        "ASTERISK_SRC",
+        "Environment variable `ASTERISK_SRC` needs to be set and point to your Asterisk source tree."
+    );
+
     let bindings = bindgen::Builder::default()
         .header("asterisk_wrapper.h")
-        .clang_arg("-I/home/simon/src/asterisk/include")
+        .clang_arg(format!("-I{asterisk}/include"))
         .clang_arg("-fblocks")
         .allowlist_item("ast_.*")
         .allowlist_item("__ast_.*")
