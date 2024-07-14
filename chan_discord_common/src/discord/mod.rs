@@ -19,7 +19,6 @@ mod voice_gateway;
 pub mod voice_task;
 
 struct DiscordInner {
-    client: Client,
     cache: InMemoryCache,
     sender: MessageSender,
     user: Id<UserMarker>,
@@ -58,7 +57,6 @@ impl Discord {
 
         let token = CancellationToken::new();
         let inner = Arc::new(DiscordInner {
-            client,
             cache,
             sender: shard.sender(),
             user: bot_user,
@@ -125,6 +123,10 @@ impl Discord {
         };
 
         Some(rx)
+    }
+
+    pub fn cancel_thread(&self) {
+        self.cancel.cancel();
     }
 }
 

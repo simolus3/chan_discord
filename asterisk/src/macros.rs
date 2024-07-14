@@ -1,13 +1,11 @@
 #[macro_export]
 macro_rules! c_str {
-    ($lit:expr) => {
-        unsafe {
-            let data = concat!($lit, "\0").as_ptr();
-            let cstr = std::ffi::CStr::from_ptr(data as *const std::os::raw::c_char);
+    ($lit:expr) => {{
+        let data = concat!($lit, "\0").as_ptr();
+        let cstr = std::ffi::CStr::from_ptr(data as *const std::os::raw::c_char);
 
-            cstr.as_ptr().cast()
-        }
-    };
+        cstr.as_ptr().cast()
+    }};
 }
 
 #[macro_export]

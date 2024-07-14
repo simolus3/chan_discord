@@ -13,23 +13,17 @@ use serenity_voice_model::{
     Event, ProtocolData,
 };
 use tokio::{
-    net::TcpStream,
     sync::mpsc::{Receiver, Sender},
-    task::JoinHandle,
     time::{sleep_until, Instant},
 };
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{http::Uri, stream::MaybeTlsStream, Message},
-    WebSocketStream,
+    tungstenite::{http::Uri, Message},
 };
 
 use super::crypto::EncryptionMode;
 
-type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
 pub struct GatewayConnection {
-    socket_task: JoinHandle<()>,
     events: Receiver<ConnectionEvent>,
     commands: Sender<ConnectionCommand>,
 }
@@ -45,7 +39,6 @@ pub enum VoiceEvent {
 }
 
 enum ConnectionEvent {
-    Opened,
     Received(Event),
     Closed,
 }
@@ -61,18 +54,15 @@ impl GatewayConnection {
         let (events_tx, events_rx) = tokio::sync::mpsc::channel(8);
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(8);
 
-        let task = {
-            tokio::spawn(async move {
-                let res = Self::socket_task(host, command_rx, events_tx.clone()).await;
-                if let Err(e) = res {
-                    warn!("Discord voice gateway task failed: {e:#?}")
-                }
-                let _ = events_tx.send(ConnectionEvent::Closed);
-            })
-        };
+        tokio::spawn(async move {
+            let res = Self::socket_task(host, command_rx, events_tx.clone()).await;
+            if let Err(e) = res {
+                warn!("Discord voice gateway task failed: {e:#?}")
+            }
+            let _ = events_tx.send(ConnectionEvent::Closed);
+        });
 
         Self {
-            socket_task: task,
             events: events_rx,
             commands: command_tx,
         }
@@ -130,7 +120,6 @@ impl GatewayConnection {
                     .await
                     .ok_or(anyhow!("Event channel closed"))?
                 {
-                    ConnectionEvent::Opened => continue,
                     ConnectionEvent::Received(event) => match event {
                         Event::Ready(ready) => VoiceEvent::Ready(ready),
                         Event::SessionDescription(desc) => VoiceEvent::SessionDescription(desc),

@@ -6,15 +6,13 @@ use std::{
     ptr::{null, NonNull},
 };
 
+use crate::{asterisk_call, AsteriskError};
 use asterisk_sys::bindings::{
     __ao2_alloc, __ao2_lock, __ao2_ref, __ao2_unlock, ao2_alloc_opts,
     ao2_alloc_opts_AO2_ALLOC_OPT_LOCK_MUTEX, ao2_alloc_opts_AO2_ALLOC_OPT_LOCK_NOLOCK,
     ao2_alloc_opts_AO2_ALLOC_OPT_LOCK_RWLOCK, ao2_lock_req,
 };
 use bitflags::bitflags;
-use log::trace;
-
-use crate::{asterisk_call, AsteriskError};
 
 /// Utilities for transparent newtypes, e.g. `struct Format(ast_format)`.
 pub unsafe trait AsteriskWrapper<A>: Sized {

@@ -146,6 +146,11 @@ unsafe extern "C" fn unload_module() -> c_int {
         Ao2::<ast_format_cap>::from_raw(old_capabilities.cast());
     }
 
+    if let Some(worker) = WORKER.get() {
+        let mut locked = worker.write().unwrap();
+        locked.take();
+    }
+
     0
 }
 
