@@ -9,3 +9,4 @@
 #include "asterisk/module.h"
 #include "asterisk/rtp_engine.h"
 #include "asterisk/stasis_channels.h"
+#include "jitterbuf.h"

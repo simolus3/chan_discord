@@ -141,10 +141,6 @@ impl VoiceDataChannel {
         };
         self.socket.send(&bytes[..size]).await?;
 
-        if self.sequence_no % 100 == 0 {
-            println!("send_voice sent something")
-        }
-
         Ok(())
     }
 

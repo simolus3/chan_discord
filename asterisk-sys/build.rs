@@ -10,7 +10,7 @@ fn main() {
         .allowlist_item("__ast_.*")
         .allowlist_item("__ao2_.*")
         .allowlist_item("AST_.*")
-        .allowlist_item("rust.*")
+        .allowlist_item("jb.*")
         .default_macro_constant_type(bindgen::MacroTypeVariation::Signed)
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()

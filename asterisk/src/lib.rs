@@ -9,6 +9,7 @@ pub mod astobj2;
 pub mod channel;
 pub mod config;
 pub mod formats;
+pub mod jitterbuffer;
 pub mod logger;
 
 pub enum AsteriskError {

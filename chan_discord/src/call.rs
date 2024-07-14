@@ -10,7 +10,10 @@ use chan_discord_common::{
 use discortp::wrap::Wrap32;
 use log::{trace, warn};
 use rand::{thread_rng, Rng};
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::{sleep_until, Instant},
+};
 use twilight_gateway::{Event, MessageSender};
 use twilight_model::id::{
     marker::{ChannelMarker, GuildMarker, UserMarker},
@@ -22,7 +25,7 @@ use asterisk_sys::bindings::{ast_control_frame_type_AST_CONTROL_ANSWER, ast_fram
 
 use crate::{
     queue_thread::{ChannelWriteKind, QueueThread},
-    rtp_receiver::RtpReceiver,
+    rtp_receiver::{FetchPacketResult, RtpReceiver},
 };
 
 pub struct CallHandle {
@@ -126,11 +129,13 @@ impl CallHandle {
     }
 }
 
-#[derive(Debug)]
 enum WorkerEvent {
     ClientRequest(Option<(CallRequest, oneshot::Sender<ChanRes<CallResponse>>)>),
     CallEvent(Option<VoiceEvent>),
+    MixedPacket((Vec<i16>, ast_frame)),
 }
+
+unsafe impl Send for WorkerEvent {}
 
 impl CallWorker {
     pub fn new(
@@ -184,6 +189,23 @@ impl CallWorker {
         }
     }
 
+    async fn mixed_packet(state: &mut RtpReceiver) -> (Vec<i16>, ast_frame) {
+        loop {
+            match state.fetch_packet() {
+                FetchPacketResult::PacketAvailable {
+                    underlying_data,
+                    frame,
+                } => return (underlying_data, frame),
+                FetchPacketResult::CheckBackLater { time } => {
+                    sleep_until(Instant::from_std(time)).await
+                }
+                FetchPacketResult::NoneQueued => {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    }
+
     async fn next_event(&mut self) -> WorkerEvent {
         tokio::select! {
             request = self.requests.request() => {
@@ -191,6 +213,9 @@ impl CallWorker {
             },
             event = Self::call_event(&mut self.voice) => {
                 WorkerEvent::CallEvent(event)
+            },
+            packet = Self::mixed_packet(&mut self.rtp) => {
+                WorkerEvent::MixedPacket(packet)
             }
         }
     }
@@ -272,15 +297,7 @@ impl CallWorker {
     async fn handle_call_event(&mut self, event: VoiceEvent) -> ChanRes<()> {
         match event {
             VoiceEvent::Packet(packet) => {
-                if let Some((backing, new_frame)) = self.rtp.handle_packet(packet) {
-                    self.queue_thread.request(
-                        self.asterisk_channel.clone(),
-                        ChannelWriteKind::Frame {
-                            backing_memory: backing,
-                            frame: new_frame,
-                        },
-                    )?;
-                }
+                self.rtp.handle_packet(packet);
             }
             VoiceEvent::UserJoined { ssrc, user } => {
                 trace!("User {user} joined with {ssrc}");
@@ -333,6 +350,13 @@ impl CallWorker {
                     };
                     self.handle_call_event(event).await
                 }
+                WorkerEvent::MixedPacket((data, frame)) => self.queue_thread.request(
+                    self.asterisk_channel.clone(),
+                    ChannelWriteKind::Frame {
+                        backing_memory: data,
+                        frame,
+                    },
+                ),
             };
 
             if let Err(e) = res {

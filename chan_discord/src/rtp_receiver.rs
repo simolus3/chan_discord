@@ -1,7 +1,7 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
     ptr::null_mut,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 
 use chan_discord_common::{
@@ -14,10 +14,14 @@ use log::{debug, warn};
 use num_integer::Average;
 use twilight_model::id::{marker::UserMarker, Id};
 
-use asterisk::{astobj2::Ao2, formats::Format};
+use asterisk::{
+    astobj2::Ao2,
+    formats::Format,
+    jitterbuffer::{JitterBuffer, JitterBufferErr},
+};
 use asterisk_sys::bindings::{
     ast_frame, ast_frame__bindgen_ty_1, ast_frame__bindgen_ty_2, ast_frame_subclass,
-    ast_frame_subclass__bindgen_ty_1, ast_frame_type_AST_FRAME_VOICE, timeval,
+    ast_frame_subclass__bindgen_ty_1, ast_frame_type_AST_FRAME_VOICE, jb_conf, timeval,
 };
 
 #[cfg(feature = "rtplog")]
@@ -27,21 +31,53 @@ pub struct RtpReceiver {
     format: Ao2<Format>,
     user_id_to_ssrc: HashMap<Id<UserMarker>, u32>,
     ssrc_to_participant: HashMap<u32, OtherParticipant>,
+    known_next: Option<KnownNextFrameTime>,
+    jb_conf: jb_conf,
     #[cfg(feature = "rtplog")]
     log: RtpLog,
 }
 
+pub enum FetchPacketResult {
+    PacketAvailable {
+        underlying_data: Vec<i16>,
+        frame: ast_frame,
+    },
+    CheckBackLater {
+        time: Instant,
+    },
+    NoneQueued,
+}
+
+unsafe impl Send for FetchPacketResult {}
+
 struct OtherParticipant {
     decoder: opus::Decoder,
-    time_synchronization: Option<(u32, SystemTime)>,
+    initial_timestamp: Option<u32>,
+    jitterbuf: Option<JitterBuffer<Vec<i16>>>,
+    last_voice_length: Duration,
+}
+
+#[derive(Clone, Copy)]
+struct KnownNextFrameTime {
+    due: Instant,
+    ssrc: u32,
 }
 
 impl RtpReceiver {
+    const ASSUMED_VOICE_LENGTH: Duration = Duration::from_millis(20);
+
     pub fn new() -> Self {
         Self {
             format: Format::slin48(),
             user_id_to_ssrc: HashMap::new(),
             ssrc_to_participant: HashMap::new(),
+            known_next: None,
+            jb_conf: jb_conf {
+                max_jitterbuf: 100,
+                resync_threshold: 1000,
+                max_contig_interp: 0,
+                target_extra: 40,
+            },
             #[cfg(feature = "rtplog")]
             log: RtpLog::new().unwrap(),
         }
@@ -56,7 +92,9 @@ impl RtpReceiver {
                 vacant.insert(OtherParticipant {
                     decoder: opus::Decoder::new(SAMPLE_RATE, opus::Channels::Stereo)
                         .map_err(|e| DiscordError::InternalError { source: e.into() })?,
-                    time_synchronization: None,
+                    jitterbuf: None,
+                    initial_timestamp: None,
+                    last_voice_length: Self::ASSUMED_VOICE_LENGTH,
                 });
 
                 // Since we have a user we better update the user id -> ssrc mapping as well
@@ -69,10 +107,124 @@ impl RtpReceiver {
     pub fn unmap_user_id(&mut self, user: Id<UserMarker>) {
         if let Some(ssrc) = self.user_id_to_ssrc.remove(&user) {
             self.ssrc_to_participant.remove(&ssrc);
+
+            if let Some(known) = &mut self.known_next {
+                if known.ssrc == ssrc {
+                    self.known_next = None;
+                }
+            }
         }
     }
 
-    pub fn handle_packet(&mut self, packet: VoicePacket) -> Option<(Vec<i16>, ast_frame)> {
+    fn next_frame_time(&mut self) -> Option<KnownNextFrameTime> {
+        match self.known_next {
+            Some(known) => Some(known),
+            None => {
+                let map = &self.ssrc_to_participant;
+                let (ssrc, time) = map
+                    .into_iter()
+                    .filter_map(|(ssrc, entry)| {
+                        Some((ssrc, entry.jitterbuf.as_ref()?.next_frame()?))
+                    })
+                    .min_by_key(|(_, time)| *time)?;
+
+                let time = KnownNextFrameTime {
+                    due: time,
+                    ssrc: *ssrc,
+                };
+                self.known_next = Some(time);
+                Some(time)
+            }
+        }
+    }
+
+    pub fn fetch_packet(&mut self) -> FetchPacketResult {
+        let Some(time) = self.next_frame_time() else {
+            return FetchPacketResult::NoneQueued;
+        };
+
+        if time.due > Instant::now() {
+            return FetchPacketResult::CheckBackLater { time: time.due };
+        }
+
+        let mut frames = vec![];
+        for entry in self.ssrc_to_participant.values_mut() {
+            let Some(jitterbuf) = &mut entry.jitterbuf else {
+                continue;
+            };
+
+            let frame = loop {
+                break match jitterbuf.get(entry.last_voice_length) {
+                    Ok(frame) => Some(frame),
+                    Err(e) => {
+                        use asterisk::jitterbuffer::JitterBufferErr;
+
+                        match e {
+                            JitterBufferErr::Empty
+                            | JitterBufferErr::Scheduled
+                            | JitterBufferErr::NoFrame
+                            | JitterBufferErr::Interpolate => None,
+                            JitterBufferErr::Drop { frame } => {
+                                drop(frame);
+                                continue;
+                            }
+                        }
+                    }
+                };
+            };
+
+            if let Some(frame) = frame {
+                frames.push(frame);
+            }
+        }
+
+        if frames.is_empty() {
+            return FetchPacketResult::NoneQueued;
+        }
+
+        let len = (&frames).into_iter().map(|f| f.data.len()).min().unwrap();
+        let mut mixed = vec![0i16; len];
+        for frame in frames {
+            for (i, sample) in frame.data.into_iter().enumerate() {
+                mixed[i] = mixed[i].saturating_add(sample);
+            }
+        }
+
+        FetchPacketResult::PacketAvailable {
+            frame: ast_frame {
+                frametype: ast_frame_type_AST_FRAME_VOICE,
+                subclass: ast_frame_subclass {
+                    __bindgen_anon_1: ast_frame_subclass__bindgen_ty_1 {
+                        format: self.format.as_ptr().cast(),
+                    },
+                    integer: 0,
+                    frame_ending: 0,
+                },
+                datalen: (mixed.len() * std::mem::size_of::<i16>()) as i32,
+                samples: mixed.len() as i32,
+                mallocd: 0,
+                mallocd_hdr_len: 0,
+                offset: 0,
+                src: null_mut(),
+                data: ast_frame__bindgen_ty_1 {
+                    ptr: mixed.as_mut_ptr().cast(),
+                },
+                delivery: timeval {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                },
+                frame_list: ast_frame__bindgen_ty_2 { next: null_mut() },
+                flags: 0,
+                ts: 0,
+                len: (1000 * len as i64) / (SAMPLE_RATE as i64),
+                seqno: 0,
+                stream_num: 0,
+            },
+            underlying_data: mixed,
+        }
+    }
+
+    pub fn handle_packet(&mut self, packet: VoicePacket) {
         match packet {
             VoicePacket::Rtp(packet) => {
                 #[cfg(feature = "rtplog")]
@@ -89,7 +241,7 @@ impl RtpReceiver {
                         "Not enough of packet left after skipping over extensions, ssrc {}",
                         packet.ssrc
                     );
-                    return None;
+                    return;
                 };
                 let data = &packet.buffer[range];
 
@@ -98,14 +250,9 @@ impl RtpReceiver {
                         "Received RTP packet from unknown sender, ssrc: {}",
                         packet.ssrc
                     );
-                    return None;
+                    return;
                 };
 
-                // todo: We should definitely mix those packets, but it looks like there is no
-                // synchronization opportunity?
-
-                // We need to be sure to malloc this, as we indicate in the generate frame that
-                // it should be freed by Asterisk.
                 let mut voice = vec![0; 2 * 960];
 
                 match participant.decoder.decode(data, &mut voice, false) {
@@ -117,48 +264,44 @@ impl RtpReceiver {
 
                             voice[i] = left.average_ceil(&right);
                         }
-
                         voice.truncate(actual_samples);
 
-                        let timestamp = match participant
-                            .translate_packet_timestamp(packet.timestamp)
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                        {
-                            Ok(dur) => dur.as_millis().try_into().unwrap(),
-                            Err(_) => 0,
-                        };
+                        let duration = Duration::from_millis(
+                            (1000 * actual_samples as u64) / (SAMPLE_RATE as u64),
+                        );
+                        participant.last_voice_length = duration;
+                        let jitterbuf = participant
+                            .jitterbuf
+                            .get_or_insert_with(|| JitterBuffer::new(&mut self.jb_conf));
+                        let base_timestamp = *participant
+                            .initial_timestamp
+                            .get_or_insert(packet.timestamp);
 
-                        let frame = ast_frame {
-                            frametype: ast_frame_type_AST_FRAME_VOICE,
-                            subclass: ast_frame_subclass {
-                                __bindgen_anon_1: ast_frame_subclass__bindgen_ty_1 {
-                                    format: self.format.as_ptr().cast(),
-                                },
-                                integer: 0,
-                                frame_ending: 0,
-                            },
-                            datalen: (voice.len() * std::mem::size_of::<i16>()) as i32,
-                            samples: actual_samples as i32,
-                            mallocd: 0,
-                            mallocd_hdr_len: 0,
-                            offset: 0,
-                            src: null_mut(),
-                            data: ast_frame__bindgen_ty_1 {
-                                ptr: voice.as_mut_ptr().cast(),
-                            },
-                            delivery: timeval {
-                                tv_sec: timestamp / 1000,
-                                tv_usec: (timestamp % 1000) * 1000,
-                            },
-                            frame_list: ast_frame__bindgen_ty_2 { next: null_mut() },
-                            flags: 0,
-                            ts: timestamp,
-                            len: (1000 * actual_samples as i64) / (SAMPLE_RATE as i64),
-                            seqno: packet.sequence_number as i32,
-                            stream_num: packet.ssrc as i32,
-                        };
+                        let res = jitterbuf.put(
+                            Box::new(voice),
+                            asterisk::jitterbuffer::JitterFrameType::Voice,
+                            duration,
+                            // In RTP, the timestamp is measured in samples, but we want to measure
+                            // it in milliseconds.
+                            (1000 * (packet.timestamp - base_timestamp) as i64)
+                                / (SAMPLE_RATE as i64),
+                        );
 
-                        return Some((voice, frame));
+                        if matches!(res, Err(JitterBufferErr::Scheduled)) {
+                            // The expected time for the next frame has changed.
+                            let Some(time) = jitterbuf.next_frame() else {
+                                return;
+                            };
+
+                            if let Some(known) = &mut self.known_next {
+                                if known.ssrc == packet.ssrc {
+                                    known.due = time;
+                                } else if time < known.due {
+                                    known.due = time;
+                                    known.ssrc = packet.ssrc;
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         warn!("Could not decode voice data: {e}");
@@ -167,24 +310,5 @@ impl RtpReceiver {
             }
             VoicePacket::Rtcp(_packet) => {}
         };
-
-        None
-    }
-}
-
-impl OtherParticipant {
-    fn translate_packet_timestamp(&mut self, timestamp: u32) -> SystemTime {
-        match self.time_synchronization {
-            Some((reference, time)) if reference < timestamp => {
-                let delta = timestamp - reference;
-                let delta_millis = 1000 * delta / SAMPLE_RATE;
-                time + Duration::from_millis(delta_millis as u64)
-            }
-            _ => {
-                let now = SystemTime::now();
-                self.time_synchronization = Some((timestamp, now));
-                now
-            }
-        }
     }
 }

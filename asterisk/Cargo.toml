@@ -10,3 +10,4 @@ crate-type = ["lib"]
 asterisk-sys = { version = "0.1.0", path = "../asterisk-sys" }
 bitflags = "2.6.0"
 log = "0.4.22"
+thiserror = "1.0.62"
