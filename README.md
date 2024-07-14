@@ -18,9 +18,10 @@ This will generate the compiled module in `target/release/libchan_discord.so`.
 After obtaining a `libchan_discord.so`, put it into the modules folder of your Asterisk
 install, typically `/usr/lib/asterisk/modules`.
 
-Discord uses the Opus codec to encode voice data, a codec that is not supported by
-Asterisk out-of-the box. As no Opus module is openly available, this module uses its
-own encoder. __This depends on `libopus` being available on your system.__
+> [!IMPORTANT]
+> Discord uses the Opus codec to encode voice data, a codec that is not supported by
+> Asterisk out-of-the box. As no Opus module is openly available, this module uses its
+> own encoder. __This depends on `libopus` being available on your system.__
 
 ### Setup
 
