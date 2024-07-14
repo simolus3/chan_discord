@@ -19,15 +19,15 @@ After obtaining a `libchan_discord.so`, put it into the modules folder of your A
 install, typically `/usr/lib/asterisk/modules`.
 
 > [!IMPORTANT]
-> Discord uses the Opus codec to encode voice data, a codec that is not supported by
-> Asterisk out-of-the box. As no Opus module is openly available, this module uses its
+> Discord uses Opus to encode voice data, a codec that is not supported by Asterisk
+> out-of-the box. As no Opus module is openly available, this module uses its
 > own encoder. __This depends on `libopus` being available on your system.__
 
 ### Setup
 
 To join voice channels, you need your own Discord bot that will be controlled by Asterisk.
 You can create one at https://discord.com/developers.
-This bot needs to be added to the servers where you're interested in joining voice channels.
+This bot needs to be added to the servers for which you're interested in joining voice channels.
 To add the bot to servers, select the "bot" option under the "OAuth2" section in the Discord
 developer portal and enable the "Connect" and "Speak" options under "Voice permissions".
 The generated URL can be used to add the bot to your server.
@@ -57,4 +57,5 @@ same = n,Dial(Discord/1234serverid5678/1234channel5678)
 ```
 
 Be aware that a bot can only be active in a single channel per server at the same time.
-You also can't manage multiple channels to the same Discord call.
+You also can't open multiple Asterisk channels to the same Discord call. Instead, use
+a bridge to connect multiple other channels with a Discord voice chat.
